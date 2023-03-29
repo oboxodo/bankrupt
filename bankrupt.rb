@@ -9,9 +9,79 @@ require "json"
 require "date"
 
 Bankrupt = Struct.new(:id, :password, :company, :company_password) do
-  Account = Struct.new(:type_name, :type, :hash, :currency, :number, :balance) do
-    Balance = Struct.new(:date, :amount, :description)
+  Balance = Struct.new(:date, :amount, :description, :instalment, :instalments) do
+    def instalments_suffix
+      " #{instalment}/#{instalments}" if instalment || instalments
+    end
+  end
 
+  CreditCard = Struct.new(:brand, :owner_id, :hash, :id) do
+    def filename
+      ["credit_card", id, owner_id].join("-")
+    end
+
+    def url
+      "https://www.itaulink.com.uy/trx/tarjetas/credito/#{hash}/movimientos_actuales"
+    end
+
+    def file_url_for_month(year = Time.now.year, month = Time.now.month)
+      url + "/#{year}#{month}00"
+    end
+
+    def balance_from_itau(year, month)
+      url = file_url_for_month(year, month)
+
+      puts "Downloading from: #{url}"
+      response = Bankrupt.get(url)
+      response.body
+    end
+
+    def balance(year, month, currency)
+      balances = []
+
+      json_string = balance_from_itau(year, month)
+      txns = JSON.parse(json_string)["itaulink_msg"]["data"]["datos"]["datosMovimientos"]["movimientos"]
+      txns.select! { _1["moneda"] == currency }
+
+      txns.each do |line|
+        fecha = line["fecha"]
+        date = Date.new(fecha["year"], fecha["monthOfYear"], fecha["dayOfMonth"])
+        amount = line["importe"] * -1
+        description = line["nombreComercio"]
+        instalment, instalments = nil
+        instalment, instalments = line["nroCuota"], line["cantCuotas"] if line["tipo"] == "Plan Pagos"
+        balances << Balance.new(date, amount, description, instalment, instalments) if transaction_data?(description)
+      end
+
+      balances
+    end
+
+    def transaction_data?(description)
+      # Beware: during my analysis of the data it seems data with "Recibo de Pago" is the last month's positive balance
+      # which must be ignored but there are other records with "RECIBO DE PAGO" which are actual payment transactions.
+      [/^Recibo de Pago$/]
+        .none? { |e| description.to_s.strip.match?(e) }
+    end
+
+    def balance_as_ynab_csv(year, month, currency)
+      csv = %w[Date Payee Category Memo Outflow Inflow].to_csv
+
+      balance(year, month, currency).each do |item|
+        csv << [
+          item.date,
+          item.description,
+          "",
+          item.description + item.instalments_suffix.to_s,
+          [0, item.amount].min * -1,
+          [0, item.amount].max
+        ].to_csv
+      end
+
+      csv
+    end
+  end
+
+  Account = Struct.new(:type_name, :type, :hash, :currency, :number, :balance) do
     def filename
       "#{type_name}-#{number}-#{currency}"
     end
@@ -96,18 +166,18 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
       end
     end
 
-    def get(url)
+    def get(url, headers = {})
       uri = URI.parse(url)
-      request = Net::HTTP::Get.new(uri.request_uri)
+      request = Net::HTTP::Get.new(uri.request_uri, headers)
       request["Cookie"] = Bankrupt.cookie if Bankrupt.cookie
 
       http.request(request)
     end
 
-    def post(url, data)
+    def post(url, data = nil)
       uri = URI.parse(url)
       request = Net::HTTP::Post.new(uri.request_uri)
-      request.set_form_data(data)
+      request.set_form_data(data) if data
       request["Cookie"] = Bankrupt.cookie if Bankrupt.cookie
 
       http.request(request)
@@ -181,6 +251,28 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
       accounts
     end
   end
+
+  def credit_cards
+    @_credit_cards ||= begin
+      json_string = Bankrupt.post("https://www.itaulink.com.uy/trx/tarjetas/credito").body
+      json = JSON.parse(json_string)
+
+      credit_cards = []
+      credit_cards_json = json["itaulink_msg"]["data"]["objetosTarjetaCredito"]["tarjetaImagen"].map(&:first)
+      credit_cards_json.each do |card_data|
+        credit_cards << CreditCard.new(
+          card_data["selloFormateado"],
+          card_data["numeroDocumentoTitular"],
+          card_data["hash"],
+          card_data["id"]
+        )
+      end
+
+      puts "There are #{credit_cards.size} credit_cards. (#{credit_cards.map(&:hash).join(',')})"
+
+      credit_cards
+    end
+  end
 end
 
 if __FILE__ == $PROGRAM_NAME
@@ -192,8 +284,8 @@ if __FILE__ == $PROGRAM_NAME
 
   bankrupt = Bankrupt.new(account_id, password)
   bankrupt.login
-  puts "Fetching account information..."
 
+  puts "Fetching accounts information..."
   bankrupt.accounts.each do |account|
     filename = "#{[account.filename, year, month].compact.join('-')}.csv"
     csv =
@@ -205,5 +297,21 @@ if __FILE__ == $PROGRAM_NAME
     open(filename, "w") << csv
 
     puts "#{filename} exported"
+  end
+
+  puts "Fetching credit cards information..."
+  bankrupt.credit_cards.each do |cc|
+    ["Pesos", "Dolares"].each do |currency|
+      filename = "#{[cc.filename, currency, year, month].compact.join('-')}.csv"
+      csv =
+        if ynab
+          cc.balance_as_ynab_csv(year, month, currency)
+        else
+          cc.balance_as_csv(year, month)
+        end
+      open(filename, "w") << csv
+
+      puts "#{filename} exported"
+    end
   end
 end
