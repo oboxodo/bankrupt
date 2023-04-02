@@ -15,7 +15,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
     end
   end
 
-  CreditCard = Struct.new(:brand, :owner_id, :hash, :id) do
+  CreditCard = Struct.new(:brand, :owner_id, :hash, :account, :id) do
     def filename
       ["credit_card", id, owner_id].join("-")
     end
@@ -264,6 +264,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
           card_data["selloFormateado"],
           card_data["numeroDocumentoTitular"],
           card_data["hash"],
+          card_data["nroCuenta"],
           card_data["id"]
         )
       end
@@ -285,6 +286,7 @@ if __FILE__ == $PROGRAM_NAME
   bankrupt = Bankrupt.new(account_id, password)
   bankrupt.login
 
+  puts
   puts "Fetching accounts information..."
   bankrupt.accounts.each do |account|
     filename = "#{[account.filename, year, month].compact.join('-')}.csv"
@@ -299,8 +301,9 @@ if __FILE__ == $PROGRAM_NAME
     puts "#{filename} exported"
   end
 
+  puts
   puts "Fetching credit cards information..."
-  bankrupt.credit_cards.each do |cc|
+  bankrupt.credit_cards.uniq(&:account).each do |cc|
     ["Pesos", "Dolares"].each do |currency|
       filename = "#{[cc.filename, currency, year, month].compact.join('-')}.csv"
       csv =
