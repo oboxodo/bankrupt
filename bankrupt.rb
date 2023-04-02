@@ -29,11 +29,10 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
     end
 
     def balance_from_itau(year, month)
+      @_balance_cache ||= {}
       url = file_url_for_month(year, month)
-
-      puts "Downloading from: #{url}"
-      response = Bankrupt.get(url)
-      response.body
+      puts "Downloading from: #{url}" unless @_balance_cache[url]
+      @_balance_cache[url] ||= Bankrupt.get(url).body
     end
 
     def balance(year, month, currency)
