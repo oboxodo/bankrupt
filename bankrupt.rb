@@ -49,7 +49,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
         description = line["nombreComercio"]
         instalment, instalments = nil
         instalment, instalments = line["nroCuota"], line["cantCuotas"] if line["tipo"] == "Plan Pagos"
-        balances << Balance.new(date, amount, description, instalment, instalments) if transaction_data?(description)
+        balances << Balance.new(date, amount, description, instalment, instalments) if transaction_data?(description) && date <= Date.today
       end
 
       balances
@@ -140,7 +140,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
         date = Date.parse(data[2])
         amount = data[5].to_f - data[4].to_f
         description = data[6].gsub(/\s\s*/, " ")
-        balances << Balance.new(date, amount, description) if transaction_data?(description)
+        balances << Balance.new(date, amount, description) if transaction_data?(description) && date <= Date.today
       end
 
       balances
