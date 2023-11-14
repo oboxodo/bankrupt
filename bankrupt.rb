@@ -9,6 +9,11 @@ require "json"
 require "date"
 
 Bankrupt = Struct.new(:id, :password, :company, :company_password) do
+  def initialize(...)
+    super(...)
+    @accounts_url = "https://www.itaulink.com.uy/trx/" # default
+  end
+
   Balance = Struct.new(:date, :amount, :description, :instalment, :instalments) do
     def instalments_suffix
       " #{instalment}/#{instalments}" if instalment || instalments
@@ -153,7 +158,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
   end
 
   class << self
-    attr_accessor :cookie
+    attr_accessor :cookie, :ua
 
     def http
       @_http ||= begin
@@ -169,6 +174,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
       uri = URI.parse(url)
       request = Net::HTTP::Get.new(uri.request_uri, headers)
       request["Cookie"] = Bankrupt.cookie if Bankrupt.cookie
+      request["User-Agent"] = @ua if @ua
 
       http.request(request)
     end
@@ -178,6 +184,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
       request = Net::HTTP::Post.new(uri.request_uri)
       request.set_form_data(data) if data
       request["Cookie"] = Bankrupt.cookie if Bankrupt.cookie
+      request["User-Agent"] = Bankrupt.ua if Bankrupt.ua
 
       http.request(request)
     end
@@ -281,9 +288,16 @@ if __FILE__ == $PROGRAM_NAME
   year = ARGV.fetch(2, ENV["YEAR"])
   month = ARGV.fetch(3, ENV["MONTH"])
   ynab = ARGV.fetch(4, ENV["YNAB"])
+  cookie = ARGV.fetch(5, ENV["COOKIE"])
 
   bankrupt = Bankrupt.new(account_id, password)
-  bankrupt.login
+  if cookie
+    # JSESSIONID=0000hgDqEKKCW9FbRzAwmbyRId5:1agva4a5p; Path=/; Secure; HttpOnly
+    Bankrupt.cookie = cookie.split("; ")[0]
+    Bankrupt.ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+  else
+    bankrupt.login
+  end
 
   puts
   puts "Fetching accounts information..."
