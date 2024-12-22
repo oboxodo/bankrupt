@@ -78,7 +78,7 @@ class CsvExporter
   end
 end
 
-class Bankrupt
+class ItauUruguay
   BASE_URL = "https://www.itaulink.com.uy".freeze
   CURRENCIES = ["Pesos", "Dolares"].freeze
 
@@ -91,7 +91,7 @@ class Bankrupt
     )
   end
 
-  def self.fetch_data(cookie, year, month)
+  def self.export_transactions(cookie, year, month)
     new(cookie).export_all_data(year, month)
   end
 
@@ -233,5 +233,5 @@ if __FILE__ == $PROGRAM_NAME
   year = ARGV.fetch(1, ENV["YEAR"])
   month = ARGV.fetch(2, ENV["MONTH"])
 
-  Bankrupt.fetch_data(cookie, year, month)
+  ItauUruguay.export_transactions(cookie, year, month)
 end
