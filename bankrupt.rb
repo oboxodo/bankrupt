@@ -4,11 +4,10 @@
 
 require "net/http"
 require "csv"
-require "nokogiri"
 require "json"
 require "date"
 
-Bankrupt = Struct.new(:id, :password, :company, :company_password) do
+Bankrupt = Struct.new do
   def initialize(...)
     super(...)
     @accounts_url = "https://www.itaulink.com.uy/trx/" # default
@@ -22,7 +21,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
 
   CreditCard = Struct.new(:brand, :owner_id, :hash, :account, :id) do
     def filename
-      ["credit_card", id, owner_id].join("-")
+      ["credit_card", id, owner_id].join("-").downcase
     end
 
     def url
@@ -87,7 +86,7 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
 
   Account = Struct.new(:type_name, :type, :hash, :currency, :number, :balance) do
     def filename
-      "#{type_name}-#{number}-#{currency}"
+      "#{type_name.downcase}-#{number}-#{currency}"
     end
 
     def url
@@ -190,47 +189,6 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
     end
   end
 
-  def login
-    response =
-      Bankrupt.post(
-        "https://www.itaulink.com.uy/trx/doLogin", {
-          id: "login",
-          tipo_usuario: "R",
-          tipo_documento: "1",
-          nro_documento: id,
-          pass: password,
-          password: password
-        }
-      )
-
-    cookie = response["Set-Cookie"].split("; ")[0]
-    @accounts_url = response["Location"]
-    puts "Account URL: #{@accounts_url}"
-
-    Bankrupt.cookie = cookie
-  end
-
-  def company_login
-    response =
-      Bankrupt.post(
-        "https://www.itaulink.com.uy/appl/servlet/FeaServlet", {
-          id: "login",
-          tipo_usuario: "C",
-          empresa: company.upcase,
-          empresa_aux: company,
-          pwd_empresa: company_password,
-          usuario: id,
-          usuario_aux: id,
-          pwd_usuario: password
-        }
-      )
-
-    cookie = response["Set-Cookie"].split("; ")[0]
-    @accounts_url = response["Location"]
-
-    Bankrupt.cookie = cookie
-  end
-
   def accounts
     @_accounts ||= begin
       response = Bankrupt.get(@accounts_url)
@@ -283,32 +241,20 @@ Bankrupt = Struct.new(:id, :password, :company, :company_password) do
 end
 
 if __FILE__ == $PROGRAM_NAME
-  account_id = ARGV.fetch(0, ENV["CI"])
-  password = ARGV.fetch(1, ENV["PASSWORD"])
-  year = ARGV.fetch(2, ENV["YEAR"])
-  month = ARGV.fetch(3, ENV["MONTH"])
-  ynab = ARGV.fetch(4, ENV["YNAB"])
-  cookie = ARGV.fetch(5, ENV["COOKIE"])
+  year = ARGV.fetch(0, ENV["YEAR"])
+  month = ARGV.fetch(1, ENV["MONTH"])
+  cookie = ARGV.fetch(2, ENV["COOKIE"])
 
-  bankrupt = Bankrupt.new(account_id, password)
-  if cookie
-    # JSESSIONID=0000hgDqEKKCW9FbRzAwmbyRId5:1agva4a5p; Path=/; Secure; HttpOnly
-    Bankrupt.cookie = cookie.split("; ")[0]
-    Bankrupt.ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
-  else
-    bankrupt.login
-  end
+  bankrupt = Bankrupt.new
+  # JSESSIONID=0000hgDqEKKCW9FbRzAwmbyRId5:1agva4a5p; Path=/; Secure; HttpOnly
+  Bankrupt.cookie = cookie.split("; ")[0]
+  Bankrupt.ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
 
   puts
   puts "Fetching accounts information..."
   bankrupt.accounts.each do |account|
     filename = "#{[account.filename, year, month].compact.join('-')}.csv"
-    csv =
-      if ynab
-        account.balance_as_ynab_csv(year, month)
-      else
-        account.balance_as_csv(year, month)
-      end
+    csv = account.balance_as_ynab_csv(year, month)
     open(filename, "w") << csv
 
     puts "#{filename} exported"
@@ -319,12 +265,7 @@ if __FILE__ == $PROGRAM_NAME
   bankrupt.credit_cards.uniq(&:account).each do |cc|
     ["Pesos", "Dolares"].each do |currency|
       filename = "#{[cc.filename, currency, year, month].compact.join('-')}.csv"
-      csv =
-        if ynab
-          cc.balance_as_ynab_csv(year, month, currency)
-        else
-          cc.balance_as_csv(year, month)
-        end
+      csv = cc.balance_as_ynab_csv(year, month, currency)
       open(filename, "w") << csv
 
       puts "#{filename} exported"
