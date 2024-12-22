@@ -5,18 +5,94 @@ require "csv"
 require "json"
 require "date"
 
-class Bankrupt
-  def initialize(cookie)
-    @accounts_url = "https://www.itaulink.com.uy/trx/"
-    @credit_cards_url = "https://www.itaulink.com.uy/trx/tarjetas/credito"
+class HttpClient
+  def initialize(cookie, ua)
+    @cookie = cookie
+    @ua = ua
     @http = setup_http
-    @cookie = cookie.split("; ")[0]
-    @ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+  end
+
+  def get(url, headers = {})
+    make_request(Net::HTTP::Get, url, headers)
+  end
+
+  def post(url, data = nil)
+    make_request(Net::HTTP::Post, url, data)
+  end
+
+  private
+
+  def make_request(request_class, url, data)
+    uri = URI.parse(url)
+    request = request_class.new(uri.request_uri)
+    request.set_form_data(data) if data && request_class == Net::HTTP::Post
+    request["Cookie"] = @cookie if @cookie
+    request["User-Agent"] = @ua if @ua
+    @http.request(request)
+  end
+
+  def setup_http
+    uri = URI.parse("https://www.itaulink.com.uy/")
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.set_debug_output $stdout if ENV["DEBUG"]
+    http.use_ssl = true
+    http
+  end
+end
+
+class Transaction
+  attr_reader :date, :description, :amount, :instalment, :instalments
+
+  def initialize(date:, description:, amount:, instalment: nil, instalments: nil)
+    @date = date
+    @description = description
+    @amount = amount
+    @instalment = instalment
+    @instalments = instalments
+  end
+
+  def to_csv_row
+    instalment_suffix = instalment ? " #{instalment}/#{instalments}" : ""
+    [
+      date,
+      description,
+      "",
+      description + instalment_suffix,
+      [0, amount].min * -1,
+      [0, amount].max
+    ]
+  end
+end
+
+class CsvExporter
+  HEADERS = %w[Date Payee Category Memo Outflow Inflow].freeze
+
+  def self.export(filename, transactions)
+    csv_data = HEADERS.to_csv
+    transactions.each do |tx|
+      csv_data << tx.to_csv_row.to_csv
+    end
+
+    File.write(filename, csv_data)
+    puts "#{filename} exported"
+  end
+end
+
+class Bankrupt
+  BASE_URL = "https://www.itaulink.com.uy".freeze
+  CURRENCIES = ["Pesos", "Dolares"].freeze
+
+  def initialize(cookie)
+    @accounts_url = "#{BASE_URL}/trx/"
+    @credit_cards_url = "#{BASE_URL}/trx/tarjetas/credito"
+    @http_client = HttpClient.new(
+      cookie.split("; ")[0],
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    )
   end
 
   def self.fetch_data(cookie, year, month)
-    client = new(cookie)
-    client.export_all_data(year, month)
+    new(cookie).export_all_data(year, month)
   end
 
   def export_all_data(year, month)
@@ -26,33 +102,8 @@ class Bankrupt
 
   private
 
-  def setup_http
-    uri = URI.parse("https://www.itaulink.com.uy/")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.set_debug_output $stdout if ENV["DEBUG"]
-    http.use_ssl = true
-    http
-  end
-
-  def get(url, headers = {})
-    uri = URI.parse(url)
-    request = Net::HTTP::Get.new(uri.request_uri, headers)
-    request["Cookie"] = @cookie if @cookie
-    request["User-Agent"] = @ua if @ua
-    @http.request(request)
-  end
-
-  def post(url, data = nil)
-    uri = URI.parse(url)
-    request = Net::HTTP::Post.new(uri.request_uri)
-    request.set_form_data(data) if data
-    request["Cookie"] = @cookie if @cookie
-    request["User-Agent"] = @ua if @ua
-    @http.request(request)
-  end
-
   def fetch_accounts
-    response = get(@accounts_url)
+    response = @http_client.get(@accounts_url)
     json_string = response.body[/var mensajeUsuario = JSON.parse\('(.*)'\);/, 1]
     json = JSON.parse(json_string)
     accounts = []
@@ -76,7 +127,7 @@ class Bankrupt
   end
 
   def fetch_credit_cards
-    json_string = post(@credit_cards_url).body
+    json_string = @http_client.post(@credit_cards_url).body
     json = JSON.parse(json_string)
     cards = []
 
@@ -98,68 +149,21 @@ class Bankrupt
   def export_accounts(year, month)
     puts "\nFetching accounts information..."
     fetch_accounts.each do |account|
-      export_account_data(account, year, month)
+      filename = "#{[account[:filename], year, month].compact.join('-')}.csv"
+      transactions = fetch_account_transactions(account, year, month)
+      CsvExporter.export(filename, transactions)
     end
   end
 
   def export_credit_cards(year, month)
     puts "\nFetching credit cards information..."
     fetch_credit_cards.uniq { |cc| cc[:account] }.each do |cc|
-      ["Pesos", "Dolares"].each do |currency|
-        export_credit_card_data(cc, currency, year, month)
+      CURRENCIES.each do |currency|
+        filename = "#{[cc[:filename], currency, year, month].compact.join('-')}.csv"
+        transactions = fetch_credit_card_transactions(cc, year, month, currency)
+        CsvExporter.export(filename, transactions)
       end
     end
-  end
-
-  def export_account_data(account, year, month)
-    filename = "#{[account[:filename], year, month].compact.join('-')}.csv"
-    csv_data = generate_account_csv(account, year, month)
-    File.write(filename, csv_data)
-    puts "#{filename} exported"
-  end
-
-  def export_credit_card_data(cc, currency, year, month)
-    filename = "#{[cc[:filename], currency, year, month].compact.join('-')}.csv"
-    csv_data = generate_credit_card_csv(cc, year, month, currency)
-    File.write(filename, csv_data)
-    puts "#{filename} exported"
-  end
-
-  def generate_account_csv(account, year, month)
-    csv_data = %w[Date Payee Category Memo Outflow Inflow].to_csv
-    transactions = fetch_account_transactions(account, year, month)
-
-    transactions.each do |tx|
-      csv_data << [
-        tx[:date],
-        tx[:description],
-        "",
-        tx[:description],
-        [0, tx[:amount]].min * -1,
-        [0, tx[:amount]].max
-      ].to_csv
-    end
-
-    csv_data
-  end
-
-  def generate_credit_card_csv(cc, year, month, currency)
-    csv_data = %w[Date Payee Category Memo Outflow Inflow].to_csv
-    transactions = fetch_credit_card_transactions(cc, year, month, currency)
-
-    transactions.each do |tx|
-      instalment_suffix = tx[:instalment] ? " #{tx[:instalment]}/#{tx[:instalments]}" : ""
-      csv_data << [
-        tx[:date],
-        tx[:description],
-        "",
-        tx[:description] + instalment_suffix,
-        [0, tx[:amount]].min * -1,
-        [0, tx[:amount]].max
-      ].to_csv
-    end
-
-    csv_data
   end
 
   def fetch_account_transactions(account, year, month)
@@ -167,17 +171,17 @@ class Bankrupt
     puts "Downloading from: #{url}"
     transactions = []
 
-    get(url).body.each_line do |line|
+    @http_client.get(url).body.each_line do |line|
       data = line.chomp.unpack("a7a4a7a2a15a15a*")
       date = Date.parse(data[2])
       description = data[6].gsub(/\s\s*/, " ")
       next if skip_account_transaction?(description) || date > Date.today
 
-      transactions << {
+      transactions << Transaction.new(
         date: date,
-        amount: data[5].to_f - data[4].to_f,
-        description: description
-      }
+        description: description,
+        amount: data[5].to_f - data[4].to_f
+      )
     end
 
     transactions
@@ -187,7 +191,7 @@ class Bankrupt
     url = credit_card_transactions_url(cc, year, month)
     puts "Downloading from: #{url}"
 
-    json_string = get(url).body
+    json_string = @http_client.get(url).body
     txns = JSON.parse(json_string)["itaulink_msg"]["data"]["datos"]["datosMovimientos"]["movimientos"]
 
     txns.select { |t| t["moneda"] == currency }.map do |tx|
@@ -196,23 +200,23 @@ class Bankrupt
       description = tx["nombreComercio"]
       next if skip_credit_card_transaction?(description) || date > Date.today
 
-      {
+      Transaction.new(
         date: date,
-        amount: tx["importe"] * -1,
         description: description,
+        amount: tx["importe"] * -1,
         instalment: tx["tipo"] == "Plan Pagos" ? tx["nroCuota"] : nil,
         instalments: tx["tipo"] == "Plan Pagos" ? tx["cantCuotas"] : nil
-      }
+      )
     end.compact
   end
 
   def account_transactions_url(account, year, month)
-    base_url = "https://www.itaulink.com.uy/trx/cuentas/#{account[:type]}/#{account[:hash]}"
+    base_url = "#{BASE_URL}/trx/cuentas/#{account[:type]}/#{account[:hash]}"
     "#{base_url}/reporteEstadoCta/TXT?anio=#{year}&mes=#{month}"
   end
 
   def credit_card_transactions_url(cc, year, month)
-    "https://www.itaulink.com.uy/trx/tarjetas/credito/#{cc[:hash]}/movimientos_actuales/#{year}#{month}00"
+    "#{BASE_URL}/trx/tarjetas/credito/#{cc[:hash]}/movimientos_actuales/#{year}#{month}00"
   end
 
   def skip_account_transaction?(description)
